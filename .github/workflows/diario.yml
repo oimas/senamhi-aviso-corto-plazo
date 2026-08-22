@@ -1,0 +1,64 @@
+# ============================================================
+# SENAMHI diario - corre automaticamente cada dia a la hora fijada
+#
+# HORARIO: el cron usa hora UTC. Peru = UTC-5 todo el anio.
+#   '30 17 * * *'  =  12:30 pm en Lima
+#   Cambia la hora editando la linea de cron abajo.
+#   Ejemplos: '0 13 * * *' = 08:00 Lima | '0 18 * * *' = 13:00 Lima
+#
+# SECRETS requeridos (repo -> Settings -> Secrets and variables -> Actions):
+#   GEE_SA_JSON    : contenido completo del JSON de la cuenta de servicio
+#   GEE_PROJECT    : id del proyecto Cloud vinculado a Earth Engine (ej: ee-tuusuario)
+#   ASSET_PREFIX   : carpeta destino, ej: users/TU_USUARIO_GEE/senamhi/aviso
+#
+# PRUEBA MANUAL: pestana Actions -> este workflow -> "Run workflow"
+#
+# NOTA: GitHub desactiva los cron tras ~60 dias sin actividad en el repo;
+# haz un push ocasional o re-habilita el workflow desde Actions.
+# ============================================================
+
+name: SENAMHI diario
+
+on:
+  schedule:
+    - cron: '30 17 * * *'   # 12:30 hora Peru (17:30 UTC)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ejecutar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ejecutar pipeline SENAMHI + Earth Engine
+        env:
+          GEE_SA_JSON: ${{ secrets.GEE_SA_JSON }}
+          GEE_PROJECT: ${{ secrets.GEE_PROJECT }}
+          ASSET_PREFIX: ${{ secrets.ASSET_PREFIX }}
+          N_AVISOS: '5'
+        run: python senamhi_avisos.py
+
+      - name: Guardar salidas como artefactos (90 dias)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: salidas-${{ github.run_number }}
+          path: salidas/
+          if-no-files-found: warn

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+salidas/
+.env
+*-key.json
+service-account*.json
