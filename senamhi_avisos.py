@@ -1,6 +1,12 @@
 # ============================================================
-# SENAMHI - Avisos de Lluvias Intensas: scraping + Earth Engine
-# Corre desatendido (GitHub Actions) o local: python senamhi_avisos.py
+# SENAMHI - Avisos de Lluvias Intensas
+#
+# Scrapea el aviso vigente, descarga los shapefiles y publica DOS capas
+# permanentes en Earth Engine (raster de todo el Peru + vector historico),
+# ademas de endpoints estaticos JSON/GeoJSON en api/.
+#
+# Uso: python senamhi_avisos.py
+#   SKIP_GEE=1  -> solo scraping + api/ (util para probar sin credenciales)
 # ============================================================
 
 import io
@@ -8,7 +14,6 @@ import os
 import re
 import sys
 import time
-import tempfile
 import logging
 import zipfile
 from datetime import datetime
@@ -16,6 +21,9 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+
+import build_api
+import gee_publish
 
 BASE_URL = "https://www.senamhi.gob.pe"
 AVISO_URL = f"{BASE_URL}/?p=aviso-24H"
@@ -29,13 +37,15 @@ HEADERS = {
     )
 }
 
+# Codigo numerico -> nombre. El codigo es lo que se rasteriza en la banda.
 NIVEL_POR_VALOR = {
-    "4": "ROJO", "ROJO": "ROJO", "ROJA": "ROJO",
-    "3": "NARANJA", "NARANJA": "NARANJA",
-    "2": "AMARILLO", "AMARILLO": "AMARILLO",
-    "1": "VERDE", "VERDE": "VERDE", "NORMAL": "VERDE", "0": "VERDE",
+    "4": 4, "ROJO": 4, "ROJA": 4,
+    "3": 3, "NARANJA": 3,
+    "2": 2, "AMARILLO": 2,
+    "1": 1, "VERDE": 1,
+    "0": 0, "NORMAL": 0, "SIN AVISO": 0,
 }
-NIVELES = ["ROJO", "NARANJA", "AMARILLO", "VERDE"]
+NOMBRE_POR_NIVEL = {0: "SIN AVISO", 1: "VERDE", 2: "AMARILLO", 3: "NARANJA", 4: "ROJO"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,8 +56,14 @@ log = logging.getLogger("senamhi")
 
 
 def mapear_nivel(valor):
+    """Devuelve (codigo, nombre). Codigo 0 si no se reconoce el valor."""
     v = str(valor).upper().strip()
-    return NIVEL_POR_VALOR.get(v, "DESCONOCIDO")
+    if v.endswith(".0"):
+        v = v[:-2]
+    codigo = NIVEL_POR_VALOR.get(v)
+    if codigo is None:
+        return 0, "DESCONOCIDO"
+    return codigo, NOMBRE_POR_NIVEL[codigo]
 
 
 def detectar_columna_alerta(gdf):
@@ -57,9 +73,29 @@ def detectar_columna_alerta(gdf):
     for col in gdf.columns:
         if col.startswith("_") or col == "geometry":
             continue
-        valores = {str(v).strip() for v in gdf[col].dropna().unique()}
+        valores = {str(v).strip().upper() for v in gdf[col].dropna().unique()}
         if valores & set(NIVEL_POR_VALOR):
             return col
+    return None
+
+
+def parsear_fecha(*candidatos):
+    """Primera fecha reconocible entre los candidatos, como YYYY-MM-DD."""
+    formatos = ("%Y-%m-%d", "%d/%m/%Y", "%Y%m%d", "%d-%m-%Y", "%Y/%m/%d")
+    for candidato in candidatos:
+        if not candidato:
+            continue
+        texto = str(candidato).strip()
+        for patron in (r"\d{4}-\d{2}-\d{2}", r"\d{2}/\d{2}/\d{4}",
+                       r"\d{8}", r"\d{2}-\d{2}-\d{4}", r"\d{4}/\d{2}/\d{2}"):
+            m = re.search(patron, texto)
+            if not m:
+                continue
+            for fmt in formatos:
+                try:
+                    return datetime.strptime(m.group(0), fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
     return None
 
 
@@ -89,25 +125,6 @@ def get_current_aviso():
             aviso["fecha_inicio"] = s.get_text(strip=True) if s else ""
             break
 
-    regiones = ["SIERRA", "SELVA", "COSTA"]
-    descripciones = {}
-    for p in soup.select("article .alerta p"):
-        b = p.find("b")
-        if b and b.get_text(strip=True).upper() in regiones:
-            descripciones[b.get_text(strip=True).upper()] = p.get_text(" ", strip=True)
-    aviso["descripciones"] = descripciones
-
-    tabla_rows = []
-    table = soup.find("table", class_="table-descripcion")
-    if table:
-        for tr in table.find_all("tr")[1:]:
-            cols = [td.get_text(strip=True) for td in tr.find_all("td")]
-            if len(cols) == 5:
-                tabla_rows.append({
-                    "region": cols[0], "tipo_pp": cols[1], "max_mm": cols[2],
-                    "probabilidad": cols[3], "fenomenos": cols[4],
-                })
-    aviso["tabla_pp"] = tabla_rows
     return aviso, soup
 
 
@@ -184,8 +201,8 @@ def find_shp(folder):
 # ── Carga de shapefiles ─────────────────────────────────────
 
 def load_shapefiles(descargados):
+    """Un registro por fecha, con nivel numerico y fecha normalizada."""
     import geopandas as gpd
-    import pandas as pd
 
     registros = []
     for entry in descargados:
@@ -199,190 +216,44 @@ def load_shapefiles(descargados):
                     gdf = gdf.to_crs(epsg=4326)
 
                 columna = detectar_columna_alerta(gdf)
-                if columna is not None:
-                    gdf["_nivel"] = gdf[columna].apply(mapear_nivel)
-                else:
-                    gdf["_nivel"] = "DESCONOCIDO"
+                if columna is None:
                     log.warning("%s sin columna de alerta reconocible", shp_path)
+                    niveles = [(0, "DESCONOCIDO")] * len(gdf)
+                else:
+                    niveles = [mapear_nivel(v) for v in gdf[columna]]
+                gdf["_nivel_num"] = [n[0] for n in niveles]
+                gdf["_nivel"] = [n[1] for n in niveles]
 
-                gdf["_aviso_numero"] = entry["numero_aviso"]
-                gdf["_aviso_fecha"] = entry["fecha"]
+                fecha_iso = parsear_fecha(
+                    gdf["FECHA"].iloc[0] if "FECHA" in gdf.columns else None,
+                    entry.get("fecha"),
+                    os.path.basename(shp_path),
+                    os.path.basename(os.path.dirname(shp_path)),
+                )
+                if not fecha_iso:
+                    log.error("No se pudo determinar la fecha de %s, se omite", shp_path)
+                    continue
+
                 registros.append({
                     "gdf": gdf,
                     "aviso": entry["numero_aviso"],
-                    "fecha": entry["fecha"],
+                    "fecha_iso": fecha_iso,
+                    "nivel_max": int(max(gdf["_nivel_num"])),
                     "archivo": os.path.basename(shp_path),
                 })
-                conteo = gdf["_nivel"].value_counts().to_dict()
+                conteo = {}
+                for _, nombre in niveles:
+                    conteo[nombre] = conteo.get(nombre, 0) + 1
                 log.info("Aviso %s | %s -> %s (%d poligonos)",
-                         entry["numero_aviso"], os.path.basename(shp_path), conteo, len(gdf))
+                         entry["numero_aviso"], fecha_iso, conteo, len(gdf))
             except Exception as e:
                 log.error("Error leyendo %s: %s", shp_path, e)
-    return registros
 
-
-def combinar_gdfs(registros):
-    import geopandas as gpd
-    import pandas as pd
-
-    lista = [r["gdf"] for r in registros]
-    if not lista:
-        return gpd.GeoDataFrame()
-    return gpd.GeoDataFrame(pd.concat(lista, ignore_index=True), crs="EPSG:4326")
-
-
-# ── Salidas locales (Excel + mapa HTML) ─────────────────────
-
-def generar_salidas_locales(aviso, registros):
-    import pandas as pd
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    archivos = []
-
-    filas = []
-    for r in registros:
-        niveles = r["gdf"]["_nivel"].value_counts().to_dict()
-        for nivel, cantidad in niveles.items():
-            filas.append({
-                "aviso": r["aviso"], "fecha": r["fecha"],
-                "shapefile": r["archivo"], "nivel": nivel,
-                "n_poligonos": int(cantidad),
-            })
-
-    path_excel = os.path.join(OUTPUT_DIR, f"senamhi_aviso_{aviso.get('numero', 'na')}.xlsx")
-    try:
-        with pd.ExcelWriter(path_excel, engine="openpyxl") as writer:
-            pd.DataFrame([
-                {"Campo": "Numero Aviso", "Valor": aviso.get("numero", "")},
-                {"Campo": "Anio", "Valor": aviso.get("anio", "")},
-                {"Campo": "Nivel de Alerta", "Valor": aviso.get("nivel_alerta", "")},
-                {"Campo": "Fecha Inicio", "Valor": aviso.get("fecha_inicio", "")},
-                {"Campo": "Extraccion", "Valor": datetime.now().strftime("%Y-%m-%d %H:%M")},
-            ]).to_excel(writer, sheet_name="Resumen Aviso", index=False)
-            if aviso.get("tabla_pp"):
-                pd.DataFrame(aviso["tabla_pp"]).to_excel(writer, sheet_name="Tabla PP", index=False)
-            if filas:
-                pd.DataFrame(filas).to_excel(writer, sheet_name="Shapefiles", index=False)
-        archivos.append(path_excel)
-        log.info("Excel generado: %s", path_excel)
-    except Exception as e:
-        log.error("No se pudo generar el Excel: %s", e)
-
-    path_geojson = os.path.join(OUTPUT_DIR, "avisos.geojson")
-    try:
-        combinar_gdfs(registros).drop(columns=["_nivel"], errors="ignore").to_file(
-            path_geojson, driver="GeoJSON")
-        archivos.append(path_geojson)
-        log.info("GeoJSON generado: %s", path_geojson)
-    except Exception as e:
-        log.error("No se pudo generar el GeoJSON: %s", e)
-
-    return archivos
-
-
-# ── Google Earth Engine ─────────────────────────────────────
-
-def inicializar_gee():
-    import ee
-
-    key_json = os.environ.get("GEE_SA_JSON", "").strip()
-    project = os.environ.get("GEE_PROJECT", "").strip()
-    if not key_json or not project:
-        raise RuntimeError(
-            "Faltan las variables GEE_SA_JSON y/o GEE_PROJECT. "
-            "Configura los secrets en GitHub o exporta las variables de entorno.")
-
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    tmp.write(key_json)
-    tmp.close()
-
-    credenciales = ee.ServiceAccountCredentials(None, key_file=tmp.name)
-    ee.Initialize(project=project, credentials=credenciales)
-    log.info("Earth Engine inicializado (proyecto: %s)", project)
-    return ee
-
-
-def sanitizar_props(props):
-    limpio = {}
-    for k, v in props.items():
-        if k.startswith("_"):
-            continue
-        if v is None or (isinstance(v, float) and v != v):
-            continue
-        if isinstance(v, (int, float, str)):
-            limpio[k] = v
-        elif isinstance(v, bool):
-            limpio[k] = int(v)
-        else:
-            limpio[k] = str(v)
-    return limpio
-
-
-def gdf_a_featurecollection(ee, gdf, nivel_por_indice=None):
-    features = []
-    for idx, (_, fila) in enumerate(gdf.iterrows()):
-        if fila.geometry is None or fila.geometry.is_empty:
-            continue
-        props = sanitizar_props({k: v for k, v in fila.items() if k != "geometry"})
-        if nivel_por_indice is not None:
-            props["NIVEL_NOMBRE"] = nivel_por_indice[idx]
-        features.append(ee.Feature(ee.Geometry(fila.geometry.__geo_interface__), props))
-    return ee.FeatureCollection(features)
-
-
-def exportar_a_gee(registros):
-    import geopandas as gpd
-    import pandas as pd
-    import ee
-
-    prefijo = os.environ.get("ASSET_PREFIX", "").rstrip("/")
-    if not prefijo:
-        raise RuntimeError("Falta ASSET_PREFIX (ej: users/tu_usuario/senamhi/aviso)")
-
-    ee = inicializar_gee()
-    tareas = []
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    objetivos = []
-    for r in registros:
-        gdf = r["gdf"]
-        fc = gdf_a_featurecollection(ee, gdf, nivel_por_indice=list(gdf["_nivel"]))
-        num = re.sub(r"[^A-Za-z0-9_-]", "", str(r["aviso"]))
-        fech = re.sub(r"[^A-Za-z0-9_-]", "", str(r["fecha"]))
-        objetivos.append((fc, f"{prefijo}_{num}_{fech}", f"aviso_{num}"))
-        objetivos.append((fc, f"{prefijo}_latest", f"aviso_latest_{num}"))
-
-    for fc, asset_id, desc in objetivos:
-        tarea = ee.batch.Export.table.toAsset(
-            collection=fc,
-            description=f"SENAMHI_{desc}_{stamp}",
-            assetId=asset_id,
-            fileFormat="GeoJSON",
-        )
-        tarea.start()
-        tareas.append((tarea, asset_id))
-        log.info("Tarea iniciada -> %s", asset_id)
-
-    fallidas = []
-    for tarea, asset_id in tareas:
-        inicio = time.time()
-        while time.time() - inicio < 600:
-            estado = tarea.status()
-            state = estado.get("state")
-            if state == "COMPLETED":
-                log.info("OK: %s", asset_id)
-                break
-            if state in ("FAILED", "CANCELLED"):
-                log.error("Fallo %s: %s", asset_id, estado.get("error_message"))
-                fallidas.append(asset_id)
-                break
-            time.sleep(10)
-        else:
-            log.error("Timeout esperando %s", asset_id)
-            fallidas.append(asset_id)
-
-    if fallidas:
-        raise RuntimeError(f"Tareas GEE fallidas: {fallidas}")
+    # Una sola capa por fecha: si dos avisos comparten fecha, gana el mas nuevo.
+    por_fecha = {}
+    for r in sorted(registros, key=lambda x: str(x["aviso"])):
+        por_fecha[r["fecha_iso"]] = r
+    return sorted(por_fecha.values(), key=lambda r: r["fecha_iso"])
 
 
 # ── Pipeline principal ──────────────────────────────────────
@@ -406,13 +277,13 @@ def main():
     if not registros:
         raise RuntimeError("Ningun shapefile pudo leerse")
 
-    generar_salidas_locales(aviso, registros)
-
+    assets = None
     if os.environ.get("SKIP_GEE", "").lower() in ("1", "true", "yes"):
         log.info("SKIP_GEE activo: no se sube nada a Earth Engine")
-        return
+    else:
+        assets = gee_publish.publicar(registros)
 
-    exportar_a_gee(registros)
+    build_api.generar(registros, assets=assets)
     log.info("Pipeline completado")
 
 

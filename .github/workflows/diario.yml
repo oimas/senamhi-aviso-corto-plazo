@@ -1,20 +1,23 @@
 # ============================================================
-# SENAMHI diario - corre automaticamente cada dia a la hora fijada
+# SENAMHI diario
+#
+# 1. Scrapea el aviso vigente y descarga los shapefiles
+# 2. Publica en Earth Engine:
+#      <ASSET_ROOT>/avisos_pp_img   ImageCollection (raster Peru, banda nivel)
+#      <ASSET_ROOT>/avisos_pp_fc    FeatureCollection historica
+# 3. Commitea los endpoints estaticos en api/ (JSON + GeoJSON)
 #
 # HORARIO: el cron usa hora UTC. Peru = UTC-5 todo el anio.
 #   '30 17 * * *'  =  12:30 pm en Lima
-#   Cambia la hora editando la linea de cron abajo.
 #   Ejemplos: '0 13 * * *' = 08:00 Lima | '0 18 * * *' = 13:00 Lima
 #
-# SECRETS requeridos (repo -> Settings -> Secrets and variables -> Actions):
-#   GEE_SA_JSON    : contenido completo del JSON de la cuenta de servicio
-#   GEE_PROJECT    : id del proyecto Cloud vinculado a Earth Engine (ej: ee-tuusuario)
-#   ASSET_PREFIX   : carpeta destino, ej: users/TU_USUARIO_GEE/senamhi/aviso
+# SECRETS (repo -> Settings -> Secrets and variables -> Actions):
+#   GEE_SA_JSON  : contenido completo del JSON de la cuenta de servicio
+#   GEE_PROJECT  : id del proyecto Cloud (ej: ee-tuusuario)
+#   ASSET_ROOT   : carpeta destino, ej: projects/ee-tuusuario/assets/senamhi
 #
-# PRUEBA MANUAL: pestana Actions -> este workflow -> "Run workflow"
-#
-# NOTA: GitHub desactiva los cron tras ~60 dias sin actividad en el repo;
-# haz un push ocasional o re-habilita el workflow desde Actions.
+# El commit diario de api/ mantiene vivo el cron (GitHub desactiva los
+# schedules tras ~60 dias sin actividad en el repo).
 # ============================================================
 
 name: SENAMHI diario
@@ -25,12 +28,16 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write   # necesario para commitear api/
+
+concurrency:
+  group: senamhi-diario
+  cancel-in-progress: false
 
 jobs:
   ejecutar:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -47,18 +54,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ejecutar pipeline SENAMHI + Earth Engine
+      - name: Pipeline SENAMHI -> Earth Engine + api/
         env:
           GEE_SA_JSON: ${{ secrets.GEE_SA_JSON }}
           GEE_PROJECT: ${{ secrets.GEE_PROJECT }}
-          ASSET_PREFIX: ${{ secrets.ASSET_PREFIX }}
+          ASSET_ROOT: ${{ secrets.ASSET_ROOT }}
           N_AVISOS: '5'
+          RASTER_SCALE: '1000'
         run: python senamhi_avisos.py
 
-      - name: Guardar salidas como artefactos (90 dias)
+      - name: Publicar endpoints estaticos
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add api
+          if git diff --staged --quiet; then
+            echo "Sin cambios en api/"
+          else
+            git commit -m "data: avisos SENAMHI $(date -u +%F)"
+            git push
+          fi
+
+      - name: Guardar shapefiles crudos como artefacto (30 dias)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: salidas-${{ github.run_number }}
+          name: shapefiles-${{ github.run_number }}
           path: salidas/
+          retention-days: 30
           if-no-files-found: warn

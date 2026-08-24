@@ -1,0 +1,19 @@
+{
+  "fecha": "2026-08-22",
+  "aviso_num": "234",
+  "nivel_max": 3,
+  "nivel_max_nombre": "NARANJA",
+  "n_poligonos": 5,
+  "poligonos_por_nivel": {
+    "AMARILLO": 2,
+    "NARANJA": 2,
+    "VERDE": 1
+  },
+  "bbox": [
+    -81.32823,
+    -18.350928,
+    -68.652279,
+    -0.038606
+  ],
+  "geojson": "avisos/2026-08-22.geojson"
+}
