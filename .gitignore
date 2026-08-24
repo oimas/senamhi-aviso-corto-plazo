@@ -2,5 +2,13 @@ __pycache__/
 *.pyc
 salidas/
 .env
+
+# Claves de cuenta de servicio. Google las descarga como
+# <proyecto>-<hash>.json, que no coincide con ningun patron obvio:
+# por eso se ignora cualquier .json en la raiz del repo. Los JSON
+# publicados viven en api/ y no se ven afectados.
+/*.json
 *-key.json
 service-account*.json
+*gserviceaccount*.json
+ee-*.json
