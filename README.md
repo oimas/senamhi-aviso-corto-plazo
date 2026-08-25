@@ -180,6 +180,10 @@ carpeta, la ImageCollection y sube los 5 últimos avisos.
 | `GEE_PROJECT` | — | proyecto Cloud de Earth Engine |
 | `ASSET_ROOT` | — | carpeta destino de las capas |
 | `N_AVISOS` | `5` | cuántos avisos recientes procesar por corrida |
+| `RELAY_URL` | allorigins | plantilla del relay HTTP; vacío lo desactiva |
+| `TIMEOUT_DIRECTO` | `20` | segundos antes de dar por bloqueado el acceso directo |
+| `TIMEOUT_RELAY` | `180` | segundos de espera para el relay (es lento) |
+| `FORCE_ALL` | — | `1` para reprocesar fechas que ya están en `api/` |
 | `RASTER_SCALE` | `1000` | resolución del ráster, en metros |
 | `API_SIMPLIFY` | `0.005` | tolerancia de simplificación del GeoJSON, en grados |
 | `PERU_ASSET` | — | límite nacional propio (por defecto usa `USDOS/LSIB_SIMPLE/2017`) |
@@ -200,6 +204,30 @@ set GEE_PROJECT=ee-tuusuario
 set ASSET_ROOT=projects/ee-tuusuario/assets/senamhi
 python senamhi_avisos.py
 ```
+
+## SENAMHI bloquea las IPs de GitHub
+
+El servidor de SENAMHI **descarta el tráfico proveniente de los datacenters de
+GitHub**: la conexión no se rechaza, se pierde, y `requests` muere con
+`ConnectTimeout` a los 30 segundos. Desde una IP peruana el mismo código
+funciona sin problema.
+
+Por eso `fetch()` intenta primero el acceso directo y, si falla, sale por un
+relay HTTP público. En cuanto una petición falla se marca el directo como
+bloqueado para el resto de la corrida, para no quemar el timeout en cada una.
+
+El relay funciona pero es lento: ~83 s por ZIP frente a 0.4 s directo. De ahí
+que solo se descarguen las fechas que aún no están en `api/`; en régimen normal
+eso es un único aviso por día.
+
+Alternativas más robustas, si el relay se vuelve un problema:
+
+- **Runner propio**: cambiar `runs-on: ubuntu-latest` por `runs-on: self-hosted`
+  y registrar un runner en un servidor con IP no bloqueada. GitHub sigue
+  orquestando; solo cambia dónde se ejecuta.
+- **Relay propio**: un Cloudflare Worker o cualquier VPS que haga de
+  intermediario, apuntando `RELAY_URL` a él. Elimina la dependencia de un
+  servicio gratuito de terceros.
 
 ## Notas de operación
 

@@ -2,7 +2,7 @@
   "nombre": "SENAMHI - Avisos de lluvias intensas (Peru)",
   "descripcion": "Indice diario de nivel de aviso por lluvias intensas. 0 = sin aviso, 4 = rojo.",
   "fuente": "https://www.senamhi.gob.pe/?p=aviso-24H",
-  "generado": "2026-08-24T21:22:14Z",
+  "generado": "2026-08-25T00:40:37Z",
   "niveles": {
     "0": "SIN AVISO",
     "1": "VERDE",
@@ -12,15 +12,15 @@
   },
   "gee": {},
   "ultimo": {
-    "fecha": "2026-08-22",
-    "aviso_num": "234",
+    "fecha": "2026-08-24",
+    "aviso_num": "236",
     "nivel_max": 3,
     "nivel_max_nombre": "NARANJA",
-    "n_poligonos": 5,
+    "n_poligonos": 8,
     "poligonos_por_nivel": {
       "AMARILLO": 2,
-      "NARANJA": 2,
-      "VERDE": 1
+      "VERDE": 3,
+      "NARANJA": 3
     },
     "bbox": [
       -81.32823,
@@ -28,15 +28,20 @@
       -68.652279,
       -0.038606
     ],
-    "geojson": "avisos/2026-08-22.geojson"
+    "geojson": "avisos/2026-08-24.geojson"
   },
-  "n_fechas": 5,
+  "n_fechas": 10,
   "fechas": [
+    "2026-08-15",
+    "2026-08-16",
+    "2026-08-17",
     "2026-08-18",
     "2026-08-19",
     "2026-08-20",
     "2026-08-21",
-    "2026-08-22"
+    "2026-08-22",
+    "2026-08-23",
+    "2026-08-24"
   ],
   "endpoints": {
     "catalogo": "index.json",

@@ -17,7 +17,7 @@ import time
 import logging
 import zipfile
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -28,6 +28,14 @@ import gee_publish
 BASE_URL = "https://www.senamhi.gob.pe"
 AVISO_URL = f"{BASE_URL}/?p=aviso-24H"
 OUTPUT_DIR = "salidas"
+
+# SENAMHI descarta el trafico de las IPs de datacenter de GitHub: la conexion
+# no se rechaza, se pierde (ConnectTimeout a los 30 s). Reintentar no sirve,
+# hay que salir por otra ruta. Desde una IP peruana el directo funciona y el
+# relay nunca se usa, asi que el respaldo no penaliza a quien no lo necesita.
+RELAY_TPL = os.environ.get("RELAY_URL", "https://api.allorigins.win/raw?url={url}")
+TIMEOUT_DIRECTO = float(os.environ.get("TIMEOUT_DIRECTO", "20"))
+TIMEOUT_RELAY = float(os.environ.get("TIMEOUT_RELAY", "180"))
 
 HEADERS = {
     "User-Agent": (
@@ -99,13 +107,51 @@ def parsear_fecha(*candidatos):
     return None
 
 
+# ── Descarga con respaldo ───────────────────────────────────
+
+_directo_bloqueado = False
+
+
+def fetch(url, binario=False):
+    """Descarga directa; si la red de origen esta bloqueada, sale por relay."""
+    global _directo_bloqueado
+
+    if not _directo_bloqueado:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT_DIRECTO)
+            r.raise_for_status()
+            return r.content if binario else r.text
+        except requests.exceptions.RequestException as e:
+            if not RELAY_TPL:
+                raise
+            # El bloqueo es por IP de origen: si fallo una peticion fallaran
+            # todas, y reintentar el directo solo quema el timeout cada vez.
+            _directo_bloqueado = True
+            log.warning("Directo fallido (%s). Se usara el relay para el resto "
+                        "de la corrida.", type(e).__name__)
+
+    log.info("Relay -> %s", url.rsplit("/", 1)[-1])
+
+    r = requests.get(RELAY_TPL.format(url=quote(url, safe="")),
+                     headers=HEADERS, timeout=TIMEOUT_RELAY)
+    r.raise_for_status()
+    if not r.content:
+        raise RuntimeError(f"El relay devolvio una respuesta vacia para {url}")
+    return r.content if binario else r.text
+
+
+def fechas_ya_publicadas(base=os.path.join(build_api.API_DIR, "avisos")):
+    """Fechas que ya tienen GeoJSON en el repo: no hace falta rebajarlas."""
+    if not os.path.isdir(base):
+        return set()
+    return {f[:-len(".geojson")] for f in os.listdir(base) if f.endswith(".geojson")}
+
+
 # ── Scraping ────────────────────────────────────────────────
 
 def get_current_aviso():
     log.info("Conectando a %s ...", AVISO_URL)
-    resp = requests.get(AVISO_URL, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(fetch(AVISO_URL), "html.parser")
     aviso = {}
 
     h2 = soup.find("h2", class_="desaparecerHR")
@@ -176,10 +222,9 @@ def download_shapefiles(shapefiles, n, force=False):
 
         try:
             log.info("Descargando aviso %s (%s)", entry["numero_aviso"], entry["fecha"])
-            r = requests.get(entry["url_zip"], headers=HEADERS, timeout=60)
-            r.raise_for_status()
+            contenido = fetch(entry["url_zip"], binario=True)
             os.makedirs(dest, exist_ok=True)
-            extraer_zip_seguro(r.content, dest)
+            extraer_zip_seguro(contenido, dest)
             open(marcador, "w").close()
             entry["local_folder"] = dest
             resultados.append(entry)
@@ -269,7 +314,18 @@ def main():
     links = get_shapefile_links(soup)
     log.info("%d shapefiles disponibles", len(links))
 
-    descargados = download_shapefiles(links, n=n_avisos)
+    if os.environ.get("FORCE_ALL", "").lower() in ("1", "true", "yes"):
+        pendientes = links
+    else:
+        ya = fechas_ya_publicadas()
+        pendientes = [l for l in links if l["fecha"] not in ya]
+        log.info("%d ya publicados, %d pendientes", len(ya), len(pendientes))
+
+    if not pendientes:
+        log.info("Todo al dia: no hay avisos nuevos que procesar")
+        return
+
+    descargados = download_shapefiles(pendientes, n=n_avisos)
     if not descargados:
         raise RuntimeError("Ningun shapefile pudo descargarse")
 
