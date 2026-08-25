@@ -37,18 +37,29 @@ PROPS_DESCARTADAS = {"RECOMENDAC", "DESCRIPCIO"}
 def inicializar_gee():
     import ee
 
-    key_json = os.environ.get("GEE_SA_JSON", "").strip()
     project = os.environ.get("GEE_PROJECT", "").strip()
-    if not key_json or not project:
-        raise RuntimeError(
-            "Faltan las variables GEE_SA_JSON y/o GEE_PROJECT. "
-            "Configura los secrets en GitHub o exporta las variables de entorno.")
+    if not project:
+        raise RuntimeError("Falta la variable GEE_PROJECT (ej: ee-tuusuario)")
 
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    tmp.write(key_json)
-    tmp.close()
+    # En local es mas comodo apuntar al archivo de la clave; en un CI se pasa
+    # el contenido por variable de entorno porque no hay disco persistente.
+    keyfile = os.environ.get("GEE_SA_KEYFILE", "").strip()
+    if keyfile:
+        if not os.path.isfile(keyfile):
+            raise RuntimeError(f"GEE_SA_KEYFILE apunta a un archivo inexistente: {keyfile}")
+        ruta = keyfile
+    else:
+        key_json = os.environ.get("GEE_SA_JSON", "").strip()
+        if not key_json:
+            raise RuntimeError(
+                "Falta la credencial: define GEE_SA_KEYFILE (ruta al JSON) "
+                "o GEE_SA_JSON (contenido del JSON).")
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        tmp.write(key_json)
+        tmp.close()
+        ruta = tmp.name
 
-    credenciales = ee.ServiceAccountCredentials(None, key_file=tmp.name)
+    credenciales = ee.ServiceAccountCredentials(None, key_file=ruta)
     ee.Initialize(project=project, credentials=credenciales)
     log.info("Earth Engine inicializado (proyecto: %s)", project)
     return ee

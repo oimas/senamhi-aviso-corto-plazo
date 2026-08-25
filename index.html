@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avisos de lluvias intensas · SENAMHI</title>
+<meta name="description" content="Visor de los avisos de lluvias intensas del SENAMHI. Datos actualizados a diario.">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+  :root {
+    --n1: #2e9e5b;
+    --n2: #e0a81c;
+    --n3: #d9741e;
+    --n4: #c1362d;
+    --ink: #14211f;
+    --ink-2: #4a5c59;
+    --ink-3: #7d8f8c;
+    --panel: #ffffff;
+    --rule: #dbe3e1;
+    --bg: #eef2f1;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+  }
+
+  #mapa { position: absolute; inset: 0; z-index: 1; }
+
+  /* ── Panel de control ─────────────────────────── */
+
+  .panel {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    z-index: 1000;
+    width: 288px;
+    max-width: calc(100vw - 28px);
+    max-height: calc(100vh - 28px);
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    box-shadow: 0 2px 14px rgba(20, 33, 31, .16);
+  }
+
+  .panel-head {
+    padding: 15px 17px 13px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .eyebrow {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 5px;
+  }
+
+  h1 {
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 1.25;
+    margin: 0;
+    letter-spacing: -.01em;
+  }
+
+  .panel-body { padding: 15px 17px 17px; }
+
+  label {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 5px;
+  }
+
+  select {
+    width: 100%;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+  }
+
+  select:focus-visible { outline: 2px solid var(--n3); outline-offset: 1px; }
+
+  .resumen {
+    margin-top: 15px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    font-size: 13.5px;
+    color: var(--ink-2);
+    line-height: 1.55;
+  }
+
+  .resumen strong { color: var(--ink); font-weight: 600; }
+
+  .maxnivel {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 2px;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .03em;
+  }
+
+  /* ── Leyenda ──────────────────────────────────── */
+
+  .leyenda {
+    margin-top: 15px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+  }
+
+  .fila {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 13px;
+    color: var(--ink-2);
+    padding: 2.5px 0;
+  }
+
+  .muestra {
+    width: 15px;
+    height: 15px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    border: 1px solid rgba(0, 0, 0, .18);
+  }
+
+  .conteo {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    font-size: 12.5px;
+    color: var(--ink-3);
+  }
+
+  .pie {
+    margin-top: 15px;
+    padding-top: 13px;
+    border-top: 1px solid var(--rule);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--ink-3);
+  }
+
+  .pie a { color: var(--ink-2); }
+
+  .cargando, .error {
+    padding: 10px 12px;
+    font-size: 13px;
+    border-radius: 3px;
+  }
+
+  .cargando { background: #f2f6f5; color: var(--ink-2); }
+  .error { background: #fdeeec; color: #8f2b23; border: 1px solid #eebbb5; }
+
+  /* ── Popup ────────────────────────────────────── */
+
+  .leaflet-popup-content { margin: 11px 14px; font-size: 13.5px; line-height: 1.55; }
+  .leaflet-popup-content h3 { margin: 0 0 5px; font-size: 14px; }
+  .leaflet-popup-content p { margin: 0; color: var(--ink-2); }
+
+  @media (max-width: 560px) {
+    .panel { width: auto; right: 14px; max-height: 46vh; }
+  }
+</style>
+</head>
+<body>
+
+<div id="mapa"></div>
+
+<div class="panel">
+  <div class="panel-head">
+    <p class="eyebrow">SENAMHI · Perú</p>
+    <h1>Avisos de lluvias intensas</h1>
+  </div>
+  <div class="panel-body">
+    <div id="estado" class="cargando">Cargando datos…</div>
+
+    <div id="controles" hidden>
+      <label for="fecha">Fecha del aviso</label>
+      <select id="fecha"></select>
+
+      <div class="resumen" id="resumen"></div>
+
+      <div class="leyenda" id="leyenda"></div>
+    </div>
+
+    <div class="pie">
+      Fuente:
+      <a href="https://www.senamhi.gob.pe/?p=aviso-24H" target="_blank" rel="noopener">SENAMHI</a>.
+      Datos abiertos en
+      <a href="api/index.json" target="_blank" rel="noopener">api/index.json</a>.
+      Este visor es de elaboración propia y no sustituye al aviso oficial.
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var NIVELES = {
+    1: { nombre: "Verde",    color: "#2e9e5b" },
+    2: { nombre: "Amarillo", color: "#e0a81c" },
+    3: { nombre: "Naranja",  color: "#d9741e" },
+    4: { nombre: "Rojo",     color: "#c1362d" }
+  };
+
+  var mapa = L.map("mapa", { zoomControl: false }).setView([-9.8, -75.2], 5);
+  L.control.zoom({ position: "bottomright" }).addTo(mapa);
+
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    maxZoom: 18
+  }).addTo(mapa);
+
+  var capa = null;
+  var $estado = document.getElementById("estado");
+  var $controles = document.getElementById("controles");
+  var $fecha = document.getElementById("fecha");
+  var $resumen = document.getElementById("resumen");
+  var $leyenda = document.getElementById("leyenda");
+
+  function fallo(msg) {
+    $estado.className = "error";
+    $estado.textContent = msg;
+    $estado.hidden = false;
+  }
+
+  function estiloDe(feature) {
+    var n = feature.properties.nivel;
+    var c = (NIVELES[n] || { color: "#9aa7a5" }).color;
+    return { color: c, weight: 1, fillColor: c, fillOpacity: 0.45 };
+  }
+
+  function alCrear(feature, layer) {
+    var p = feature.properties;
+    var info = NIVELES[p.nivel] || { nombre: "Sin clasificar" };
+    var html = "<h3>Nivel " + p.nivel + " · " + info.nombre + "</h3>" +
+               "<p>Aviso N°" + p.aviso_num + " · " + p.fecha + "</p>";
+    if (p.DESCRIPCIO) {
+      html += "<p>" + p.DESCRIPCIO + "</p>";
+    }
+    layer.bindPopup(html);
+    layer.on({
+      mouseover: function () { layer.setStyle({ weight: 2.5, fillOpacity: 0.62 }); },
+      mouseout:  function () { capa.resetStyle(layer); }
+    });
+  }
+
+  function pintar(geo) {
+    if (capa) { mapa.removeLayer(capa); }
+    capa = L.geoJSON(geo, { style: estiloDe, onEachFeature: alCrear }).addTo(mapa);
+
+    var b = capa.getBounds();
+    if (b.isValid()) { mapa.fitBounds(b, { padding: [40, 40] }); }
+
+    var conteo = {};
+    var maximo = 0;
+    geo.features.forEach(function (f) {
+      var n = f.properties.nivel;
+      conteo[n] = (conteo[n] || 0) + 1;
+      if (n > maximo) { maximo = n; }
+    });
+
+    var props = geo.properties || {};
+    var infoMax = NIVELES[maximo] || { nombre: "Sin aviso", color: "#9aa7a5" };
+    $resumen.innerHTML =
+      "Aviso N°<strong>" + (props.aviso_num || "?") + "</strong> · " +
+      (props.fecha || "") + "<br>" +
+      geo.features.length + " polígonos · nivel máximo " +
+      '<span class="maxnivel" style="background:' + infoMax.color + '">' +
+      infoMax.nombre.toUpperCase() + "</span>";
+
+    $leyenda.innerHTML = "";
+    Object.keys(NIVELES).forEach(function (n) {
+      if (!conteo[n]) { return; }
+      var f = document.createElement("div");
+      f.className = "fila";
+      f.innerHTML =
+        '<span class="muestra" style="background:' + NIVELES[n].color + '"></span>' +
+        NIVELES[n].nombre +
+        '<span class="conteo">' + conteo[n] + "</span>";
+      $leyenda.appendChild(f);
+    });
+  }
+
+  function cargarFecha(fecha) {
+    fetch("api/avisos/" + fecha + ".geojson", { cache: "no-cache" })
+      .then(function (r) {
+        if (!r.ok) { throw new Error("HTTP " + r.status); }
+        return r.json();
+      })
+      .then(pintar)
+      .catch(function (e) { fallo("No se pudo cargar el aviso del " + fecha + " (" + e.message + ")."); });
+  }
+
+  fetch("api/index.json", { cache: "no-cache" })
+    .then(function (r) {
+      if (!r.ok) { throw new Error("HTTP " + r.status); }
+      return r.json();
+    })
+    .then(function (idx) {
+      var fechas = (idx.fechas || []).slice().reverse();
+      if (!fechas.length) { throw new Error("el catálogo está vacío"); }
+
+      fechas.forEach(function (f) {
+        var o = document.createElement("option");
+        o.value = f;
+        o.textContent = f;
+        $fecha.appendChild(o);
+      });
+
+      $fecha.value = fechas[0];
+      $fecha.addEventListener("change", function () { cargarFecha(this.value); });
+
+      $estado.hidden = true;
+      $controles.hidden = false;
+      cargarFecha(fechas[0]);
+    })
+    .catch(function (e) {
+      fallo("No se pudo leer api/index.json (" + e.message + "). " +
+            "Si abriste este archivo con doble clic, el navegador bloquea la lectura: " +
+            "hay que servirlo por HTTP (GitHub Pages).");
+    });
+})();
+</script>
+</body>
+</html>

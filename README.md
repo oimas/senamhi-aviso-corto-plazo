@@ -59,6 +59,20 @@ de 3.5 MB; a escala de 1 km la diferencia de área es 0.013%. Ajustable con
 `API_SIMPLIFY` (`0` desactiva la simplificación). En Earth Engine se sube la
 geometría completa, sin simplificar.
 
+## Visor web
+
+`index.html` en la raíz del repositorio es un visor Leaflet que lee `api/`
+directamente: selector de fecha, polígonos coloreados por nivel, leyenda con
+el conteo y ficha al hacer clic. No necesita Earth Engine ni credenciales.
+
+Se publica activando **Settings → Pages** (rama `main`, carpeta `/`):
+
+```
+https://oimas.github.io/senamhi-aviso-corto-plazo/
+```
+
+Se actualiza solo: cada corrida reescribe `api/`, y el visor lee de ahí.
+
 ## Cómo se usa la capa
 
 ### En el Code Editor
